@@ -1,0 +1,95 @@
+ AutoScalingRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ecs-tasks.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: '/'
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecs:DescribeServices
+                  - ecs:UpdateService
+                  - cloudwatch:DeleteAlarms
+                  - cloudwatch:DescribeAlarms
+                  - cloudwatch:PutMetricAlarm
+                Resource: '*'
+
+  AutoScalingTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      MinCapacity: 1
+      MaxCapacity: !Ref MaxContainers
+      ResourceId: !Join
+        - '/'
+        - - service
+          - !Ref EcsCluster
+          - !GetAtt FargateService.Name
+      ScalableDimension: ecs:service:DesiredCount
+      ServiceNamespace: ecs
+      RoleARN: !GetAtt AutoScalingRole.Arn
+
+  ScaleUpPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub '${FargateService}ScaleUpPolicy'
+      PolicyType: StepScaling
+      ScalingTargetId: !Ref AutoScalingTarget
+      StepScalingPolicyConfiguration:
+        AdjustmentType: ChangeInCapacity
+        Cooldown: 60
+        MetricAggregationType: Average
+        StepAdjustments:
+          - MetricIntervalLowerBound: 0
+            ScalingAdjustment: 1
+  ScaleDownPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub '${FargateService}ScaleDownPolicy'
+      PolicyType: StepScaling
+      ScalingTargetId: !Ref AutoScalingTarget
+      StepScalingPolicyConfiguration:
+        AdjustmentType: ChangeInCapacity
+        Cooldown: 60
+        MetricAggregationType: Average
+        StepAdjustments:
+          - MetricIntervalUpperBound: 0
+            ScalingAdjustment: -1
+
+  AlarmHighRequests:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      ActionsEnabled: TRUE
+      AlarmActions:
+        - !Ref ScaleUpPolicy
+      AlarmDescription: !Sub
+        - 'Scale Up Alarm based on requests for ${FargateServiceName}'
+        - FargateServiceName: !GetAtt FargateService.Name
+      ComparisonOperator: GreaterThanThreshold
+      DatapointsToAlarm: 2
+      # the dimensions can be found in the console after selecting a namespace to filter by
+      Dimensions:
+        - Name: TargetGroup
+          Value: !GetAtt TargetGroup.TargetGroupFullName
+      EvaluationPeriods: 3
+      # the metric name can be found in the console on the screen before a metric is graphed
+      MetricName: RequestCountPerTarget
+      # the namespace can be found in the console on the first screen before filtering metrics
+      Namespace: AWS/ApplicationELB
+      OKActions:
+        - !Ref ScaleDownPolicy
+      Period: 60
+      Statistic: Sum
+      Threshold: 3000
+      TreatMissingData: ignore
+      Unit: None # comes from the metric
